@@ -1,4 +1,5 @@
-from math import exp, hypot
+from collections.abc import Sequence
+from math import exp
 from random import Random
 
 from ..models import TSPInstance, TSPSolution
@@ -42,13 +43,7 @@ class SimulatedAnnealingSolver(TSPSolver):
             return TSPSolution(self.name, [1, 1], 0.0, 0.0)
 
         rng = Random(self.seed)
-        distances = [
-            [
-                hypot(x1 - x2, y1 - y2)
-                for x2, y2 in instance.coordinates
-            ]
-            for x1, y1 in instance.coordinates
-        ]
+        distances = instance.distance_matrix
 
         # Nearest-neighbor initialization gives annealing a useful starting tour.
         unvisited = set(range(1, size))
@@ -86,7 +81,7 @@ class SimulatedAnnealingSolver(TSPSolver):
         return TSPSolution(self.name, closed_route, best_length, 0.0)
 
     @staticmethod
-    def _length(route: list[int], distances: list[list[float]]) -> float:
+    def _length(route: list[int], distances: Sequence[Sequence[float]]) -> float:
         return sum(
             distances[route[index]][route[(index + 1) % len(route)]]
             for index in range(len(route))

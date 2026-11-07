@@ -4,7 +4,9 @@ from pathlib import Path
 from .models import TSPInstance
 
 
-def parse_line(line: str, *, name: str | None = None) -> TSPInstance:
+def parse_line(
+    line: str, *, name: str | None = None, distance_matrix_threshold: int | None = None
+) -> TSPInstance:
     content = line.split("#", 1)[0].strip()
     if not content:
         raise ValueError("cannot parse an empty TSP line")
@@ -30,25 +32,34 @@ def parse_line(line: str, *, name: str | None = None) -> TSPInstance:
         except ValueError as exc:
             raise ValueError("reference route contains a non-integer") from exc
         _validate_route(reference_route, len(coordinates))
-    return TSPInstance(coordinates, reference_route, name)
+    return TSPInstance(coordinates, reference_route, name, distance_matrix_threshold)
 
 
-def load_instances(path: str | Path) -> list[TSPInstance]:
-    return list(iter_instances(path))
+def load_instances(
+    path: str | Path, *, distance_matrix_threshold: int | None = None
+) -> list[TSPInstance]:
+    return list(iter_instances(path, distance_matrix_threshold=distance_matrix_threshold))
 
 
-def iter_instances(path: str | Path) -> Iterator[TSPInstance]:
+def iter_instances(
+    path: str | Path, *, distance_matrix_threshold: int | None = None
+) -> Iterator[TSPInstance]:
     """Yield instances one at a time for large datasets."""
     instances_seen = 0
-    for line_number, raw_line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
-        if not raw_line.split("#", 1)[0].strip():
-            continue
-        try:
-            instance = parse_line(raw_line, name=f"instance-{instances_seen + 1}")
-        except ValueError as exc:
-            raise ValueError(f"{path}:{line_number}: {exc}") from exc
-        instances_seen += 1
-        yield instance
+    with Path(path).open("r", encoding="utf-8") as source:
+        for line_number, raw_line in enumerate(source, 1):
+            if not raw_line.split("#", 1)[0].strip():
+                continue
+            try:
+                instance = parse_line(
+                    raw_line,
+                    name=f"instance-{instances_seen + 1}",
+                    distance_matrix_threshold=distance_matrix_threshold,
+                )
+            except ValueError as exc:
+                raise ValueError(f"{path}:{line_number}: {exc}") from exc
+            instances_seen += 1
+            yield instance
 
 
 def _validate_route(route: list[int], size: int) -> None:

@@ -45,6 +45,14 @@ instance = load_instances("data/sample.txt")[0]
 results = compare(instance, [NearestNeighborSolver()])
 ```
 
+可在构造实例或读取数据时指定距离矩阵阈值。例如：
+
+```python
+instance = load_instances("data/sample.txt", distance_matrix_threshold=1000)[0]
+```
+
+城市数大于阈值时，`instance.distance_matrix[i][j]` 会实时计算且不缓存距离；等于或小于阈值时仍预计算。未指定阈值则保持原有的预计算行为。
+
 绘图功能是可选的，需要安装 `requirements.txt` 中的 Matplotlib。核心解析、指标和算法对比不依赖第三方包。
 
 ## 扩展算法
