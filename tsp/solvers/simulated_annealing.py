@@ -85,7 +85,17 @@ class SimulatedAnnealingSolver(TSPSolver):
             closed_route,
             best_length,
             0.0,
-            metadata={"history": history, "history_label": "best length"},
+            metadata={
+                "history": history,
+                "history_label": "best length",
+                "parameters": {
+                    "initial_temperature": self.initial_temperature,
+                    "cooling_rate": self.cooling_rate,
+                    "min_temperature": self.min_temperature,
+                    "iterations_per_temperature": self.iterations_per_temperature,
+                    "seed": self.seed,
+                },
+            },
         )
 
     @staticmethod

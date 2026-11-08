@@ -1,0 +1,226 @@
+from __future__ import annotations
+
+from random import Random
+from typing import Sequence
+
+from ..models import TSPInstance, TSPSolution
+from ..solver import TSPSolver
+
+
+class HybridTSPSolver(TSPSolver):
+
+    name = "hybrid"
+
+    def __init__(
+        self,
+        starts: int = 12,
+        perturbations: int = 2,
+        three_opt: bool = True,
+        seed: int | None = None,
+    ) -> None:
+        if starts < 1 or perturbations < 0:
+            raise ValueError("starts must be at least 1 and perturbations non-negative")
+        self.starts = starts
+        self.perturbations = perturbations
+        self.three_opt = three_opt
+        self.seed = seed
+
+    def solve(self, instance: TSPInstance) -> TSPSolution:
+        n = instance.size
+        if n == 0:
+            raise ValueError("cannot solve an empty instance")
+        if n == 1:
+            return TSPSolution(self.name, [1, 1], 0.0, 0.0)
+
+        distances = instance.distance_matrix
+        rng = Random(self.seed)
+        best: list[int] | None = None
+        best_length = float("inf")
+        history: list[float] = []
+        for start in range(self.starts):
+            if start % 2 == 0:
+                route = self._nearest_neighbor(n, distances, rng, randomized=start > 1)
+            else:
+                route = self._savings_route(n, distances, rng)
+            route = self._improve(route, distances)
+            for _ in range(self.perturbations):
+                kicked = self._double_bridge(route, rng)
+                kicked = self._improve(kicked, distances)
+                if self._length(kicked, distances) < self._length(route, distances):
+                    route = kicked
+            length = self._length(route, distances)
+            if length < best_length:
+                best, best_length = route[:], length
+            history.append(best_length)
+
+        assert best is not None
+        closed = [city + 1 for city in best]
+        closed.append(closed[0])
+        return TSPSolution(
+            self.name,
+            closed,
+            best_length,
+            0.0,
+            metadata={
+                "history": history,
+                "history_label": "best length",
+                "parameters": {
+                    "starts": self.starts,
+                    "perturbations": self.perturbations,
+                    "three_opt": self.three_opt,
+                    "seed": self.seed,
+                },
+                "starts": self.starts,
+                "perturbations": self.perturbations,
+                "three_opt": self.three_opt,
+                "seed": self.seed,
+            },
+        )
+
+    @staticmethod
+    def _nearest_neighbor(n: int, d: Sequence[Sequence[float]], rng: Random, randomized: bool) -> list[int]:
+        start = rng.randrange(n) if randomized else 0
+        route = [start]
+        left = set(range(n)) - {start}
+        while left:
+            choices = sorted(left, key=lambda city: d[route[-1]][city])
+            # A small restricted candidate list makes repeated starts diverse.
+            next_city = rng.choice(choices[: min(3, len(choices))]) if randomized else choices[0]
+            route.append(next_city)
+            left.remove(next_city)
+        return route
+
+    @staticmethod
+    def _savings_route(n: int, d: Sequence[Sequence[float]], rng: Random) -> list[int]:
+        """Clarke-Wright route merging with city 0 as the depot."""
+        if n <= 2:
+            return list(range(n))
+        routes = {city: [0, city] for city in range(1, n)}
+        owner = {city: city for city in range(1, n)}
+        savings = sorted(
+            ((d[0][i] + d[0][j] - d[i][j], i, j) for i in range(1, n) for j in range(i + 1, n)),
+            reverse=True,
+        )
+        for saving, i, j in savings:
+            if saving < 0:
+                break
+            ri, rj = owner[i], owner[j]
+            if ri not in routes or rj not in routes:
+                continue
+            if ri == rj:
+                continue
+            left, right = routes[ri], routes[rj]
+            if left[-1] == i and right[1] == j:
+                merged = left + right[1:]
+            elif left[1] == i and right[-1] == j:
+                merged = right + left[1:]
+            elif left[-1] == i and right[-1] == j:
+                merged = left + list(reversed(right[:-1]))
+            elif left[1] == i and right[1] == j:
+                merged = list(reversed(left)) + right[1:]
+            else:
+                continue
+            pivot = merged.index(0)
+            merged = merged[pivot:] + merged[:pivot]
+            del routes[ri], routes[rj]
+            key = merged[1]
+            routes[key] = merged
+            for city in merged[1:]:
+                owner[city] = key
+        route = next(iter(routes.values()))
+        # A merge can orient the depot in the middle of the path. Rotate it
+        # back to the front before inserting any still-unmerged routes.
+        pivot = route.index(0)
+        route = route[pivot:] + route[:pivot]
+        remaining = set(range(1, n)) - set(route[1:])
+        while remaining:
+            city = rng.choice(tuple(remaining))
+            best_pos = min(
+                range(1, len(route)),
+                key=lambda pos: d[route[pos - 1]][city] + d[city][route[pos]] - d[route[pos - 1]][route[pos]],
+            )
+            route.insert(best_pos, city)
+            remaining.remove(city)
+        # Defensive normalization after route merges: every city must occur
+        # exactly once before the caller closes the tour.
+        normalized = [0]
+        seen = {0}
+        for city in route:
+            if city not in seen and 0 <= city < n:
+                normalized.append(city)
+                seen.add(city)
+        normalized.extend(city for city in range(1, n) if city not in seen)
+        return normalized
+
+    def _improve(self, route: list[int], d: Sequence[Sequence[float]]) -> list[int]:
+        route = self._two_opt(route, d)
+        # The exhaustive three-cut neighborhood grows cubically (and each
+        # candidate needs a tour-length scan), so use it only on small tours.
+        if self.three_opt and 6 <= len(route) <= 80:
+            route = self._three_opt(route, d)
+        return route
+
+    @staticmethod
+    def _two_opt(route: list[int], d: Sequence[Sequence[float]]) -> list[int]:
+        n = len(route)
+        while True:
+            changed = False
+            for i in range(n - 1):
+                a, b = route[i], route[(i + 1) % n]
+                for j in range(i + 2, n):
+                    if i == 0 and j == n - 1:
+                        continue
+                    c, e = route[j], route[(j + 1) % n]
+                    if d[a][c] + d[b][e] + 1e-12 < d[a][b] + d[c][e]:
+                        route[i + 1 : j + 1] = reversed(route[i + 1 : j + 1])
+                        changed = True
+                        break
+                if changed:
+                    break
+            if not changed:
+                return route
+
+    @staticmethod
+    def _three_opt(route: list[int], d: Sequence[Sequence[float]]) -> list[int]:
+        n = len(route)
+        while True:
+            old = HybridTSPSolver._length(route, d)
+            for i in range(n - 5):
+                for j in range(i + 2, n - 3):
+                    for k in range(j + 2, n):
+                        a, b = route[i], route[i + 1]
+                        c, e = route[j], route[j + 1]
+                        f, g = route[k], route[(k + 1) % n]
+                        candidates = (
+                            route[: i + 1] + route[i + 1 : j + 1][::-1] + route[j + 1 : k + 1][::-1] + route[k + 1 :],
+                            route[: i + 1] + route[i + 1 : j + 1] + route[j + 1 : k + 1][::-1] + route[k + 1 :],
+                            route[: i + 1] + route[i + 1 : j + 1][::-1] + route[j + 1 : k + 1] + route[k + 1 :],
+                        )
+                        candidate = min(candidates, key=lambda r: HybridTSPSolver._length(r, d))
+                        if HybridTSPSolver._length(candidate, d) + 1e-12 < old:
+                            route = candidate
+                            break
+                    else:
+                        continue
+                    break
+                else:
+                    continue
+                break
+            else:
+                return route
+
+    @staticmethod
+    def _double_bridge(route: list[int], rng: Random) -> list[int]:
+        if len(route) < 8:
+            return route[:]
+        a, b, c = sorted(rng.sample(range(1, len(route)), 3))
+        return route[:a] + route[c:] + route[b:c] + route[a:b]
+
+    @staticmethod
+    def _length(route: list[int], d: Sequence[Sequence[float]]) -> float:
+        return sum(d[route[i]][route[(i + 1) % len(route)]] for i in range(len(route)))
+
+
+# Short alias for callers who prefer the generic name used in experiment code.
+HybridSolver = HybridTSPSolver
+HybridHeuristicSolver = HybridTSPSolver

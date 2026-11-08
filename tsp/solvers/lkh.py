@@ -31,6 +31,7 @@ class LKHSolver(TSPSolver):
         candidates = self._candidate_sets(d)
         rng = Random(self.seed)
         best, best_cost = None, float("inf")
+        history: list[float] = []
         for run in range(self.runs):
             route = self._construct(run % n if run < n else rng.randrange(n), candidates, d, rng, run > 0)
             route = self._two_opt(route, candidates, d)
@@ -42,10 +43,24 @@ class LKHSolver(TSPSolver):
             cost = self._length(route, d)
             if cost < best_cost:
                 best, best_cost = route[:], cost
+            history.append(best_cost)
         assert best is not None
         closed = [x + 1 for x in best] + [best[0] + 1]
         return TSPSolution(self.name, closed, best_cost, 0.0,
-                           metadata={"runs": self.runs, "max_depth": self.max_depth})
+                           metadata={
+                               "history": history,
+                               "history_label": "best length",
+                               "parameters": {
+                                   "candidate_count": self.candidate_count,
+                                   "runs": self.runs,
+                                   "max_depth": self.max_depth,
+                                   "seed": self.seed,
+                                   "kick_count": self.kick_count,
+                                   "max_trials": self.max_trials,
+                               },
+                               "runs": self.runs,
+                               "max_depth": self.max_depth,
+                           })
 
     def _candidate_sets(self, d) -> list[list[int]]:
         n = len(d)
