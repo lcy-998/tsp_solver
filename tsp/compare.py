@@ -1,3 +1,4 @@
+from collections import Counter
 from time import perf_counter
 
 from .metrics import route_length
@@ -14,6 +15,20 @@ def compare(instance: TSPInstance, solvers: list[TSPSolver]) -> list[TSPSolution
         result.length = route_length(instance, result.route)
         result.runtime_seconds = elapsed
         results.append(result)
+
+    counts = Counter(result.algorithm for result in results)
+    seen: Counter[str] = Counter()
+    used_names = set(counts)
+    for result in results:
+        name = result.algorithm
+        if counts[name] > 1:
+            while True:
+                seen[name] += 1
+                numbered_name = f"{name}_{seen[name]}"
+                if numbered_name not in used_names:
+                    break
+            result.algorithm = numbered_name
+            used_names.add(numbered_name)
     return results
 
 

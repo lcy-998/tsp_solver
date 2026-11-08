@@ -17,21 +17,21 @@
 使用 `tool/classify_data.py` 将一个数据文件中的实例按点数拆分。默认在输入文件所在目录生成分类文件，文件名由原文件名和规模类别组成；没有实例的类别不会生成文件：
 
 ```powershell
-.\.venv\bin\python.exe tool/classify_data.py data/combined_train.txt
+.\.venv-plot\Scripts\python.exe tool/classify_data.py data/combined_train.txt
 ```
 
 上述命令会按需生成 `combined_train_small.txt`、`combined_train_medium.txt`、`combined_train_large.txt` 和 `combined_train_ultra_large.txt`。分类范围为：小规模少于 100 个点，中规模 100 至 999 个点，大规模 1000 至 10000 个点，超大规模多于 10000 个点。可以使用 `-o` 指定其他输出目录：
 
 ```powershell
-.\.venv\bin\python.exe tool/classify_data.py data/combined_train.txt -o output
+.\.venv-plot\Scripts\python.exe tool/classify_data.py data/combined_train.txt -o output
 ```
 
 ## 运行示例
 
-当前环境使用 MSYS2 Python，虚拟环境的解释器位于 `.venv/bin/python.exe`：
+当前使用 Windows Python 3.13 虚拟环境，解释器位于 `.venv-plot/Scripts/python.exe`，其中已安装 Matplotlib：
 
 ```powershell
-.\.venv\bin\python.exe example.py
+.\.venv-plot\Scripts\python.exe example.py
 ```
 
 算法通过 `TSPSolver` 接口实现，多个算法可以传给 `compare()` 统一运行：
