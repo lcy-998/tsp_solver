@@ -57,6 +57,7 @@ class SimulatedAnnealingSolver(TSPSolver):
         current_length = self._length(route, distances)
         best_route = route[:]
         best_length = current_length
+        history = [best_length]
         temperature = self.initial_temperature
 
         while temperature > self.min_temperature:
@@ -73,12 +74,19 @@ class SimulatedAnnealingSolver(TSPSolver):
                     if current_length < best_length:
                         best_route = route[:]
                         best_length = current_length
+                history.append(best_length)
 
             temperature *= self.cooling_rate
 
         closed_route = [city + 1 for city in best_route]
         closed_route.append(closed_route[0])
-        return TSPSolution(self.name, closed_route, best_length, 0.0)
+        return TSPSolution(
+            self.name,
+            closed_route,
+            best_length,
+            0.0,
+            metadata={"history": history, "history_label": "best length"},
+        )
 
     @staticmethod
     def _length(route: list[int], distances: Sequence[Sequence[float]]) -> float:
