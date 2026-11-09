@@ -3,6 +3,8 @@ from __future__ import annotations
 from random import Random
 from typing import Sequence
 
+from ..candidates import nearest_neighbours
+from ..local_search import two_opt
 from ..models import TSPInstance, TSPSolution
 from ..solver import TSPSolver
 
@@ -16,13 +18,17 @@ class HybridTSPSolver(TSPSolver):
         starts: int = 12,
         perturbations: int = 2,
         three_opt: bool = True,
+        candidate_count: int = 15,
         seed: int | None = None,
     ) -> None:
         if starts < 1 or perturbations < 0:
             raise ValueError("starts must be at least 1 and perturbations non-negative")
+        if candidate_count < 1:
+            raise ValueError("candidate_count must be at least 1")
         self.starts = starts
         self.perturbations = perturbations
         self.three_opt = three_opt
+        self.candidate_count = candidate_count
         self.seed = seed
 
     def solve(self, instance: TSPInstance) -> TSPSolution:
@@ -33,6 +39,7 @@ class HybridTSPSolver(TSPSolver):
             return TSPSolution(self.name, [1, 1], 0.0, 0.0)
 
         distances = instance.distance_matrix
+        candidates = nearest_neighbours(distances, self.candidate_count)
         rng = Random(self.seed)
         best: list[int] | None = None
         best_length = float("inf")
@@ -42,10 +49,10 @@ class HybridTSPSolver(TSPSolver):
                 route = self._nearest_neighbor(n, distances, rng, randomized=start > 1)
             else:
                 route = self._savings_route(n, distances, rng)
-            route = self._improve(route, distances)
+            route = self._improve(route, distances, candidates)
             for _ in range(self.perturbations):
                 kicked = self._double_bridge(route, rng)
-                kicked = self._improve(kicked, distances)
+                kicked = self._improve(kicked, distances, candidates)
                 if self._length(kicked, distances) < self._length(route, distances):
                     route = kicked
             length = self._length(route, distances)
@@ -68,6 +75,7 @@ class HybridTSPSolver(TSPSolver):
                     "starts": self.starts,
                     "perturbations": self.perturbations,
                     "three_opt": self.three_opt,
+                    "candidate_count": self.candidate_count,
                     "seed": self.seed,
                 },
                 "starts": self.starts,
@@ -152,33 +160,15 @@ class HybridTSPSolver(TSPSolver):
         normalized.extend(city for city in range(1, n) if city not in seen)
         return normalized
 
-    def _improve(self, route: list[int], d: Sequence[Sequence[float]]) -> list[int]:
-        route = self._two_opt(route, d)
-        # The exhaustive three-cut neighborhood grows cubically (and each
+    def _improve(self, route: list[int], d: Sequence[Sequence[float]], candidates) -> list[int]:
+        # Candidate-list 2-opt with don't-look bits: O(nK) per pass instead of
+        # the O(n^2) full scan that used to dominate the runtime.
+        route = two_opt(route, d, candidates)
+        # The exhaustive three-cut neighbourhood grows cubically (and each
         # candidate needs a tour-length scan), so use it only on small tours.
         if self.three_opt and 6 <= len(route) <= 80:
             route = self._three_opt(route, d)
         return route
-
-    @staticmethod
-    def _two_opt(route: list[int], d: Sequence[Sequence[float]]) -> list[int]:
-        n = len(route)
-        while True:
-            changed = False
-            for i in range(n - 1):
-                a, b = route[i], route[(i + 1) % n]
-                for j in range(i + 2, n):
-                    if i == 0 and j == n - 1:
-                        continue
-                    c, e = route[j], route[(j + 1) % n]
-                    if d[a][c] + d[b][e] + 1e-12 < d[a][b] + d[c][e]:
-                        route[i + 1 : j + 1] = reversed(route[i + 1 : j + 1])
-                        changed = True
-                        break
-                if changed:
-                    break
-            if not changed:
-                return route
 
     @staticmethod
     def _three_opt(route: list[int], d: Sequence[Sequence[float]]) -> list[int]:

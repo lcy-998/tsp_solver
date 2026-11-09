@@ -3,6 +3,8 @@ from __future__ import annotations
 from random import Random
 from typing import Iterable
 
+from ..candidates import nearest_neighbours
+from ..local_search import two_opt
 from ..models import TSPInstance, TSPSolution
 from ..solver import TSPSolver
 
@@ -28,17 +30,17 @@ class LKHSolver(TSPSolver):
         if n == 1:
             return TSPSolution(self.name, [1, 1], 0.0, 0.0)
         d = instance.distance_matrix
-        candidates = self._candidate_sets(d)
+        candidates = nearest_neighbours(d, self.candidate_count)
         rng = Random(self.seed)
         best, best_cost = None, float("inf")
         history: list[float] = []
         for run in range(self.runs):
             route = self._construct(run % n if run < n else rng.randrange(n), candidates, d, rng, run > 0)
-            route = self._two_opt(route, candidates, d)
+            route = two_opt(route, d, candidates)
             route = self._lk_search(route, candidates, d)
             for _ in range(self.kick_count):
                 route = self._double_bridge(route, rng)
-                route = self._two_opt(route, candidates, d)
+                route = two_opt(route, d, candidates)
                 route = self._lk_search(route, candidates, d)
             cost = self._length(route, d)
             if cost < best_cost:
@@ -61,11 +63,6 @@ class LKHSolver(TSPSolver):
                                "runs": self.runs,
                                "max_depth": self.max_depth,
                            })
-
-    def _candidate_sets(self, d) -> list[list[int]]:
-        n = len(d)
-        return [sorted((j for j in range(n) if j != i), key=lambda j: d[i][j])[:min(self.candidate_count, n - 1)]
-                for i in range(n)]
 
     @staticmethod
     def _construct(start: int, candidates, d, rng: Random, randomized: bool) -> list[int]:
@@ -95,31 +92,6 @@ class LKHSolver(TSPSolver):
             if best_move is None:
                 return route
             route = best_move[0]
-
-    @staticmethod
-    def _two_opt(route: list[int], candidates, d) -> list[int]:
-        """Fast candidate-restricted 2-opt pass using only four edge costs."""
-        n = len(route)
-        pos = [0] * n
-        while True:
-            for i, city in enumerate(route):
-                pos[city] = i
-            changed = False
-            for i in range(n - 2):
-                a, b = route[i], route[i + 1]
-                for c in candidates[a]:
-                    j = pos[c]
-                    if j <= i + 1 or j >= n - 1:
-                        continue
-                    e, f = route[j], route[j + 1]
-                    if d[a][e] + d[b][f] + 1e-12 < d[a][b] + d[e][f]:
-                        route[i + 1:j + 1] = reversed(route[i + 1:j + 1])
-                        changed = True
-                        break
-                if changed:
-                    break
-            if not changed:
-                return route
 
     def _search_exchange(self, route, pos, candidates, d, t1, t2, removed, added, gain, seq, depth, budget):
         if depth >= self.max_depth or budget[0] <= 0:

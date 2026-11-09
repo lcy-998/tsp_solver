@@ -1,3 +1,6 @@
 # Optional plotting dependency. Core framework uses only the Python standard library.
 matplotlib>=3.8
 
+# Optional: vectorised distance matrix and candidate-list construction.
+# Everything falls back to pure Python when numpy is absent.
+numpy>=1.24
