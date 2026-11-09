@@ -55,6 +55,16 @@ instance = load_instances("data/sample.txt", distance_matrix_threshold=1000)[0]
 
 绘图功能是可选的，需要安装 `requirements.txt` 中的 Matplotlib。核心解析、指标和算法对比不依赖第三方包。
 
+## 性能相关实现（n 接近 1000 时必读）
+
+- `tsp/models.py` 在装有 numpy 时按行向量化构建距离矩阵：n ≤ 2000 返回 list of lists（标量索引更快），更大时返回 numpy 数组以节省内存。
+- `tsp/candidates.py` 为每个城市建立 K 近邻候选表，使用 `argpartition`；没有 numpy 时退回 `heapq`。
+- `tsp/local_search.py` 提供候选表 + don't-look bits + 位置数组的 2-opt，单次收敛从 O(n³) 降到接近 O(nK)。`HybridSolver` 与 `LKHSolver` 都调用它，`candidate_count` 默认 15。
+
+`distance_matrix_threshold` 仍然保留，但**不建议在 n ≈ 1000 时使用**：按需距离会在每次 `d[i][j]` 访问时重算 `hypot`，实测比预计算慢约 3 倍，而 n=1000 的完整矩阵只占约 8 MB。只有在内存确实吃紧（n 上万）时才打开。
+
+在 n≈1000 的数据上，候选表 2-opt 单次收敛约 25 ms，旧的全邻域实现约 24 s，质量差约 3%；`HybridSolver` 的多起点 + 双桥可以在 4 s 内追平旧实现的质量。
+
 ## 扩展算法
 
 在 `tsp/solvers/` 新增类并实现：
