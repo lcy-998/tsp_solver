@@ -161,6 +161,83 @@ print(solution.metadata["lower_bound"])
 solver = LKHSolver(runs=1, kick_count=0, max_trials=1, ascent_iterations=5, seed=42)
 ```
 
+## Concorde 式分支切割精确求解
+
+`tsp/solvers/branch_and_cut.py` 把 Concorde 的算法骨架用纯 Python 重写了一遍，不依赖任何原生二进制：
+
+- **松弛**：DFJ 模型 —— 度数等式 + 子回路消除约束 `x(δ(S)) ≥ 2`，再叠加 comb 不等式。
+- **分离**（`tsp/cuts.py`）：整数解取支撑图的连通分量；分数解用 Stoer-Wagner 全局最小割找最便宜的违约 `δ(S)`。两者都是精确分离：没有割可加时，当前 `x` 满足全部子回路约束。comb 分离在子回路收敛后进行。
+- **分支**：在分数边上分支 `x_e = 0` / `x_e = 1`，best-bound 优先，用 incumbent 剪枝。
+- **LP**（`tsp/lp.py`）：自带两阶段单纯形，增量热启动（见下），变量上界 `x_e ≤ 1` 作为懒惰约束按需加入。
+- **上界**：多起点最近邻 + 2-opt + 双桥踢动，保证根节点一开始就有不错的 incumbent。
+
+```python
+from tsp.solvers import BranchAndCutSolver
+
+solver = BranchAndCutSolver(time_limit=120)
+solution = solver.solve(instance)
+solution.metadata["optimal"]      # True 表示已证明最优
+solution.metadata["lower_bound"]  # 未证明最优时的下界
+solution.metadata["nodes"], solution.metadata["cuts"], solution.metadata["comb_cuts"]
+```
+
+### 三件加速关键件
+
+**1. comb 不等式**（`comb_inequalities`）
+
+```
+x(δ(H)) + Σ_i x(δ(T_i)) ≥ 3k + 1      k 为奇数（≥3），齿两两不交且都与 handle 相交
+```
+
+因为每一项在可行点上至少是 2，被违反的 comb 只能是「齿很紧」的那一类，所以齿按**边界收缩**的方向构造：先取跨越 `δ(H)` 的 `x = 1` 连通分量（Padberg–Rinaldi 的经典取法），再用离开 handle 的边做种子、沿降低 `δ(T)` 的方向生长。handle 候选包括 `x = 1` 分量、相邻分量并集、分量加邻点、最小割一侧，以及**由 0.5 边组成的三角形**——半整数顶点上的 comb 往往正是被这种三角形 handle 切出来的，只用整块紧分量永远构造不出 `δ(H) = 3`。所有候选在返回前都会重算左端项，只返回真正违约的。
+
+实测（随机欧氏实例，根节点）：
+
+| n | 关 comb 下界 | 开 comb 下界 | 根节点 gap |
+| --- | --- | --- | --- |
+| 40 | 536.404 | 539.618 | 1.46% → 0.85% |
+| 50 | 584.511 | 585.764 | 2.28% → 2.06% |
+| 60 | 617.590 | 619.046 | 0.46% → 0.23% |
+| 80 | 708.138 | 711.235 | 1.49% → 1.04% |
+
+**2. LP 热启动**（`LPModel`）
+
+`minimize()` 每次调用都重建 tableau、跑阶段一。分支切割节点则反复微扰同一个 LP：先解一次，再加一条割、再加一条。`LPModel` 因此把 tableau `T = B⁻¹A`、基 `basis`、基逆 `B⁻¹`、reduced cost `rc` 全部留住：
+
+- 加一行：`row ← row − (row)_B · B⁻¹A`，一次 Gauss-Jordan 扫过；RHS 变负时走对偶单纯形。基逆按 `B' = [[B,0],[r,1]] ⟹ B'⁻¹ = [[B⁻¹,0],[−rB⁻¹,1]]` 扩展。
+- 加一列：`α' = B⁻¹α`，`rc = c − c_B B⁻¹ α`，一个矩阵向量乘。
+- `add_row` 以调用方的系数编号为准，行内符号（`>=` 行会被取反以拿到 `+1` 的松弛列）由 `_signs` 记录并回填到 `duals`，所以 `rc(e) = c(e) − Σ_r duals[r] · coef(r, e)` 直接成立。
+
+不变式 `T = B⁻¹A`、`B·B⁻¹ = I`、reduced cost 自洽在测试里逐步校验；增量结果与冷启动 `minimize()` 在 300 次随机求解上完全一致（numpy 与纯 Python 两条路径各 300/300）。
+
+**3. 列生成 pricing**
+
+节点 LP 起步只放候选边（每城 k 近邻 + incumbent 边 + 割池涉及的边），解完后用对偶价 `prices[e] = Σ_r duals[r] · coef(r,e)` 给未激活边定价，reduced cost 为负的追加进来再解。pricing 最多 6 轮；若仍未收敛，就把剩余列全部激活重解——**受限 LP 从上方逼近松弛，用它剪枝是不合法的**，所以离开 `_NodeLP` 的界一定来自完整松弛。
+
+实测根节点：n=40 用 366 列（全列 780）得到与全列**完全相同**的 3604.4472；n=60 用 542 列（全列 1770），快 3–6 倍。
+
+### 一个来自退化行的实测加速
+
+分支到一定深度后，某城市可能已有两条固定边，此时「其余边必须为 0」被写成 `Σ x = 0` 的等式行，阶段一在这个极度退化的顶点上要磨掉几百次旋转。把这些必然为 0 的边直接从列集合里删掉后，n=40 的节点吞吐从 73 节点/10 s 提升到 1173 节点/10 s，旋转数从约 700/节点降到约 60/节点，同一时限下的下界也从 530.06 升到 534.86。
+
+主要参数：`node_limit`（默认 2000）、`time_limit`（默认 None）、`cut_rounds`（根节点分离轮数）、`deep_cut_rounds`（浅层子节点分离轮数）、`separation_depth`（此深度以下只用已有割池）、`comb_cuts` / `comb_depth` / `comb_rounds`（comb 开关、生效深度、轮数）、`pricing`（列生成开关）、`max_cuts`、`polish_kicks`。
+
+规模建议：
+
+| 规模 | 表现 |
+| --- | --- |
+| n ≤ 20 | 根节点即证明最优（DFJ 松弛在这里通常已是整数解），0.0 s |
+| n ≈ 30–40 | 多数实例在根节点或少量节点内证明最优；少数需要更多节点 |
+| n ≈ 50–60 | 下界与启发式解差距 0.2%–2%，证明最优通常超出 `node_limit` |
+| n ≥ 100 | 不适合：请用 `HybridSolver` / `LKHSolver`，或用真正的 Concorde 二进制做精确解 |
+
+与真正的 Concorde 相比，仍然缺：blossom / domino / local cuts、跨节点的基继承（目前每个节点仍重建一次 LP，只在节点内做热启动）、预处理的边删减、稀疏形式的 revised simplex、并行搜索 —— 这些正是 Concorde 能把精确解推到上万城市的差距所在。
+
+```powershell
+# 用精确解反过来标定启发式的真实差距
+.\.venv-plot\Scripts\python.exe example_branch_and_cut.py
+```
+
 ## 扩展算法
 
 在 `tsp/solvers/` 新增类并实现：

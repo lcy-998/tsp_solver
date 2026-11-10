@@ -1,4 +1,5 @@
 from .ant_colony import AntColonySolver
+from .branch_and_cut import BranchAndCutSolver
 from .dynamic_programming import DynamicProgrammingSolver
 from .lkh import LKHSolver
 from .hybrid import HybridHeuristicSolver, HybridSolver, HybridTSPSolver
@@ -8,6 +9,7 @@ from .simulated_annealing import SimulatedAnnealingSolver
 
 __all__ = [
     "AntColonySolver",
+    "BranchAndCutSolver",
     "DynamicProgrammingSolver",
     "LKHSolver",
     "HybridSolver",
