@@ -7,9 +7,10 @@ import pytest
 from tsp.candidates import alpha_candidate_sets, alpha_values_for_city
 from tsp.local_search import tour_length, two_opt
 from tsp.metrics import route_length
-from tsp.models import TSPInstance, _dense_distance_matrix
+from tsp.models import TSPInstance, _OnDemandDistanceMatrix, _dense_distance_matrix
 from tsp.one_tree import held_karp_ascent, minimum_one_tree
 from tsp.solvers import LKHSolver
+from tsp.spatial import nearest_neighbour_graph
 
 
 def make_points(n, seed=0):
@@ -185,3 +186,96 @@ def test_lkh_rejects_empty_instance_and_invalid_ascent_budget():
         LKHSolver().solve(TSPInstance([]))
     with pytest.raises(ValueError):
         LKHSolver(ascent_iterations=-1)
+
+
+def _brute_neighbours(points, k):
+    return [
+        sorted(
+            (other for other in range(len(points)) if other != city),
+            key=lambda other: (
+                (points[city][0] - points[other][0]) ** 2
+                + (points[city][1] - points[other][1]) ** 2,
+                other,
+            ),
+        )[:k]
+        for city in range(len(points))
+    ]
+
+
+def test_near_neighbour_graph_is_exact_and_symmetric():
+    rng = random.Random(21)
+    datasets = [
+        [(rng.random(), rng.random()) for _ in range(60)],
+        [(rng.gauss(0, 0.01) + i * 0.001, rng.gauss(0, 0.01)) for i in range(60)],
+        [(i / 40, 0.0) for i in range(40)],
+    ]
+    for points in datasets:
+        graph = nearest_neighbour_graph(points, 5)
+        assert [row[:5] for row in graph] == _brute_neighbours(points, 5)
+        assert all(city in graph[other] for city, row in enumerate(graph) for other in row)
+
+
+def test_sparse_one_tree_and_alpha_match_complete_graph_when_graph_is_complete():
+    d = _dense_distance_matrix(make_points(8, seed=5))
+    full = [sorted(other for other in range(8) if other != city) for city in range(8)]
+    pi = [0.1, -0.2, 0.3, 0.0, 0.15, -0.05, 0.2, -0.1]
+    complete = minimum_one_tree(d, pi)
+    sparse = minimum_one_tree(d, pi, full)
+    assert sparse.scope == "candidate"
+    assert sparse.edges == complete.edges
+    assert sparse.modified_cost == pytest.approx(complete.modified_cost)
+    assert alpha_candidate_sets(d, 3, pi, complete) == alpha_candidate_sets(d, 3, pi, sparse, full)
+    assert alpha_values_for_city(3, d, pi, sparse, full) == pytest.approx(
+        alpha_values_for_city(3, d, pi, complete)
+    )
+    assert held_karp_ascent(d, 4.0, 5).lower_bound == pytest.approx(
+        held_karp_ascent(d, 4.0, 5, full).lower_bound
+    )
+
+
+def test_sparse_one_tree_on_narrow_graph_is_still_a_valid_tree():
+    points = make_points(14, seed=6)
+    d = _dense_distance_matrix(points)
+    graph = nearest_neighbour_graph(points, 5)
+    tree = minimum_one_tree(d, [0.0] * 14, graph)
+    assert tree.scope == "candidate"
+    assert len(tree.tree_edges) == 12
+    assert tree.degrees[0] == 2
+    assert len(tree.edges) == 14
+
+
+def test_large_scale_mode_solves_1000_plus_cities_with_on_demand_distances():
+    points = make_points(1200, seed=9)
+    instance = TSPInstance(points, distance_matrix_threshold=1000)
+    assert isinstance(instance.distance_matrix, _OnDemandDistanceMatrix)
+    solver = LKHSolver(runs=1, kick_count=0, ascent_iterations=3, sparse=True, seed=2)
+    first = solver.solve(instance)
+    second = solver.solve(instance)
+    assert first == second
+    assert first.route[0] == first.route[-1]
+    assert sorted(first.route[:-1]) == list(range(1, 1201))
+    assert first.length == pytest.approx(route_length(instance, first.route))
+    assert first.metadata["mode"] == "sparse"
+    assert first.metadata["bound_scope"] == "candidate"
+    assert first.metadata["candidate_graph_width"] >= 5
+    assert math.isfinite(first.metadata["lower_bound"])
+
+
+def test_mode_switch_and_large_scale_parameter_validation():
+    small = TSPInstance(make_points(20, seed=1))
+    normal = LKHSolver(runs=1, kick_count=0, ascent_iterations=1).solve(small)
+    assert normal.metadata["mode"] == "complete"
+    assert normal.metadata["bound_scope"] == "complete"
+    forced = LKHSolver(runs=1, kick_count=0, ascent_iterations=1, large_scale_threshold=10)
+    assert forced.solve(small).metadata["mode"] == "sparse"
+    boundary = LKHSolver(runs=1, kick_count=0, ascent_iterations=0, large_scale_threshold=20)
+    assert boundary.solve(small).metadata["mode"] == "sparse"
+    overridden = LKHSolver(runs=1, kick_count=0, ascent_iterations=0,
+                           large_scale_threshold=20, sparse=False)
+    assert overridden.solve(small).metadata["mode"] == "complete"
+    with pytest.raises(ValueError):
+        LKHSolver(large_scale_threshold=-1)
+    with pytest.raises(ValueError):
+        LKHSolver(sparse="yes")
+    with pytest.raises(ValueError):
+        LKHSolver(candidate_graph_width=0)

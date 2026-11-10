@@ -83,7 +83,32 @@ solution = solver.solve(instance)
 - **LK 顺序 k-opt**：从两个方向搜索起始边，遵循累计正增益、边不重复和单环可行性约束，并通过回溯寻找深层交换；
 - **多 run 与 trials/kicks**：每次 trial 在双桥扰动后重新执行 LK，始终保留历史最优闭环。
 
-可复用能力按职责拆分：`tsp/one_tree.py` 提供 1-tree 与下界，`tsp/candidates.py` 提供普通 K 近邻和 α 候选集，`tsp/local_search.py`、`tsp/perturbations.py` 分别提供 2-opt 和双桥扰动；`tsp/solvers/lkh.py` 只负责组装求解流程。
+可复用能力按职责拆分：`tsp/one_tree.py` 提供 1-tree 与下界，`tsp/candidates.py` 提供普通 K 近邻和 α 候选集，`tsp/spatial.py` 从坐标构建近邻图，`tsp/local_search.py`、`tsp/perturbations.py` 分别提供 2-opt 和双桥扰动；`tsp/solvers/lkh.py` 只负责组装求解流程。
+
+### 1000 点以上的大规模模式
+
+`n >= large_scale_threshold`（默认 1000，即 1000 点及以上）时自动切换为近邻图模式，也可用 `sparse=True/False` 强制开关：
+
+- `tsp/spatial.py` 用均匀网格（退化数据改用分块 numpy）生成精确 k 近邻图，时间 O(nK)、内存 O(nK)，不生成 n² 距离表；
+- 最小 1-tree、Held–Karp ascent 和 α 值都只在这张 O(nK) 的候选图上计算：`minimum_one_tree(..., candidates=graph)`、`held_karp_ascent(..., graph)`、`alpha_candidate_sets(..., graph)`；α 值的树上路径最大边改用倍增 LCA，避免每个城市各做一次 O(n) DFS；
+- LK 收敛使用 don't-look 队列和增量维护的无向邻接数组，改进后只重新检查受影响的城市，不再重建整表或扫描全部起点。
+
+```python
+solver = LKHSolver(
+    large_scale_threshold=1000,   # 超过该规模自动启用近邻图
+    sparse=None,                  # True / False 可强制开关
+    candidate_graph_width=None,   # 默认 max(3 * candidate_count, 12)
+)
+solution = solver.solve(instance)
+```
+
+`metadata["mode"]` 为 `"sparse"` 或 `"complete"`，`metadata["bound_scope"]` 说明下界的作用域。**注意**：稀疏模式下 1-tree 建在受限候选图上，`metadata["lower_bound"]` 是该图松弛问题的界，可能高于真实最优值，不能再当作 TSP 的严格下界或最优性证明；完整模式下仍是严格下界。
+
+大实例建议用 `distance_matrix_threshold` 打开按需距离，避免生成 n² 距离矩阵：
+
+```python
+instance = load_instances("data/large.txt", distance_matrix_threshold=1000)[0]
+```
 
 ```python
 from tsp.solvers import LKHSolver
@@ -96,6 +121,10 @@ solver = LKHSolver(
     max_trials=800,     # 每次 run 的 trial 上限（含未扰动的首次 trial）
     ascent_iterations=50,
     seed=42,
+    # 下面三个参数只影响 n > large_scale_threshold 的大规模模式
+    large_scale_threshold=1000,
+    sparse=None,
+    candidate_graph_width=None,
 )
 solution = solver.solve(instance)
 print(solution.metadata["lower_bound"])
@@ -107,14 +136,30 @@ print(solution.metadata["lower_bound"])
 
 ## 性能相关实现（n 接近 1000 时必读）
 
-- `tsp/models.py` 在装有 numpy 时按行向量化构建距离矩阵：n ≤ 2000 返回 list of lists（标量索引更快），更大时返回 numpy 数组以节省内存。
-- `tsp/candidates.py` 提供两类可复用候选集：普通 K 近邻（numpy `argpartition`，无 numpy 时退回 `heapq`）和基于最小 1-tree 的 α 候选集。
-- `tsp/one_tree.py` 用 O(n²) 的 Prim 算法构造最小 1-tree，并提供 Held–Karp ascent 下界；α 候选集用 O(n²) 的路径最大边扫描生成。ascent 每轮也需 O(n²)，大规模实例可用 `ascent_iterations` 控制预算。
+- `tsp/models.py` 在装有 numpy 时按行向量化构建距离矩阵：n ≤ 2000 返回 list of lists（标量索引更快），更大时返回 numpy 数组以节省内存；n 上万时可用 `distance_matrix_threshold` 改为按需计算，把这部分内存降到 O(n)。
+- `tsp/candidates.py` 提供三类可复用候选集：普通 K 近邻（numpy `argpartition`，无 numpy 时退回 `heapq`）、完整图上的 α 候选集，以及候选图上的 α 候选集（传入 `candidates=graph`，复杂度 O(nK log K)）。
+- `tsp/one_tree.py` 完整图模式用 O(n²) 的 Prim；传入 `candidates` 后改用堆式稀疏 Prim，每轮 O(nK)。`tsp/spatial.py` 的网格近邻图是 O(nK) 时间与内存，实测 n=10000 的图约 15 MB。
 - `tsp/local_search.py` 提供候选表 + don't-look bits + 位置数组的 2-opt，单次收敛从 O(n³) 降到接近 O(nK)。`HybridSolver` 与 `LKHSolver` 都调用它；`HybridSolver` 的 `candidate_count` 默认 15，`LKHSolver` 默认使用 5 个 α 候选。
+- `LKHSolver` 的 LK 收敛改用增量邻接数组 + don't-look 队列后，不再随每次改进重建 O(n) 的边表或扫描全部起点。
 
-`distance_matrix_threshold` 仍然保留，但**不建议在 n ≈ 1000 时使用**：按需距离会在每次 `d[i][j]` 访问时重算 `hypot`，实测比预计算慢约 3 倍，而 n=1000 的完整矩阵只占约 8 MB。只有在内存确实吃紧（n 上万）时才打开。
+`distance_matrix_threshold` 在 n≈1000 时不建议使用：按需距离会在每次 `d[i][j]` 访问时重算 `hypot`，实测比预计算慢约 3 倍，而 n=1000 的完整矩阵只占约 8 MB。n ≥ 5000 时内存收益超过这点开销，建议开启；完整矩阵在 n=10000 时约 800 MB。
 
-在 n≈1000 的数据上，候选表 2-opt 单次收敛约 25 ms，旧的全邻域实现约 24 s，质量差约 3%；`HybridSolver` 的多起点 + 双桥可以在 4 s 内追平旧实现的质量。
+单 run、无 kick、`ascent_iterations=10`、随机均匀点的实测（旧完整图实现 → 大规模模式）：
+
+| 城市数 | 旧完整图 LKH | 大规模模式 | 加速 |
+| --- | --- | --- | --- |
+| 1000 | 约 42.7 s | 约 1.6 s | 约 26 倍 |
+| 2000 | 约 203 s | 约 5.4 s | 约 38 倍 |
+| 5000 | — | 约 42 s | — |
+| 10000 | — | 约 156 s | 按需距离、`ascent_iterations=5` |
+
+前三种规模下两种模式得到的路径长度完全一致。上述时间不含距离矩阵构建；n≥10000 时请配合按需距离使用。
+
+默认的 `runs=5` 与 kicks 会按 trial 数成倍增加耗时，万点实例建议显式给出预算，例如：
+
+```python
+solver = LKHSolver(runs=1, kick_count=0, max_trials=1, ascent_iterations=5, seed=42)
+```
 
 ## 扩展算法
 

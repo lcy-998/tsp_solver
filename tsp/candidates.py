@@ -4,12 +4,18 @@
 routines instead use a minimum 1-tree, optionally improved by Held--Karp node
 penalties, to estimate how likely an edge is to belong to an optimal tour.
 Every returned candidate list excludes the city itself.
+
+Passing a ``candidates`` near-neighbour graph to the alpha routines restricts
+1-trees and alpha values to O(nK) edges (using a binary-lifting path maximum
+instead of one DFS per city), which is what makes 10000+ city instances
+tractable.  Without it the full O(n^2) relaxation is used.
 """
 
 from __future__ import annotations
 
 import heapq
 from collections.abc import Sequence
+from math import inf
 
 from .one_tree import OneTree, minimum_one_tree
 
@@ -69,6 +75,7 @@ def alpha_values_for_city(
     distances: Sequence[Sequence[float]],
     penalties: Sequence[float] | None = None,
     one_tree: OneTree | None = None,
+    candidates: Sequence[Sequence[int]] | None = None,
 ) -> list[float]:
     """Return alpha-nearness from ``city`` to every other city.
 
@@ -78,6 +85,8 @@ def alpha_values_for_city(
     is replaced instead.  Tree edges have alpha zero by definition.
     """
     n = len(distances)
+    if candidates is not None:
+        return _sparse_alpha_values(city, distances, penalties, one_tree, candidates)
     tree = minimum_one_tree(distances, penalties) if one_tree is None else one_tree
     pi = tree.penalties if penalties is None else penalties
     values = [0.0] * n
@@ -127,6 +136,7 @@ def alpha_candidate_sets(
     k: int,
     penalties: Sequence[float] | None = None,
     one_tree: OneTree | None = None,
+    candidates: Sequence[Sequence[int]] | None = None,
 ) -> list[list[int]]:
     """Return the k alpha-nearest neighbours of every city.
 
@@ -138,6 +148,8 @@ def alpha_candidate_sets(
     if n <= 1:
         return [[] for _ in range(n)]
     k = max(1, min(int(k), n - 1))
+    if candidates is not None:
+        return _sparse_candidate_sets(distances, k, penalties, one_tree, candidates)
     tree = minimum_one_tree(distances, penalties) if one_tree is None else one_tree
     result: list[list[int]] = []
     for city in range(n):
@@ -145,4 +157,103 @@ def alpha_candidate_sets(
         choices = [other for other in range(n) if other != city]
         choices.sort(key=lambda other: (alpha[other], distances[city][other], other))
         result.append(choices[:k])
+    return result
+
+
+class _PathMaximum:
+    """Max edge cost on MST paths, via binary lifting (O(n log n) setup)."""
+
+    def __init__(self, tree: OneTree, distances, pi: Sequence[float]) -> None:
+        n = len(distances)
+        self.log = max(1, n.bit_length())
+        self.up = [[0] * n for _ in range(self.log)]
+        self.mx = [[0.0] * n for _ in range(self.log)]
+        self.depth = [0] * n
+        self.up[0][1] = 1
+        seen = bytearray(n)
+        seen[1] = 1
+        stack = [1]
+        while stack:
+            current = stack.pop()
+            for other in tree.mst_adjacency[current]:
+                if other == 0 or seen[other]:
+                    continue
+                seen[other] = 1
+                self.up[0][other] = current
+                self.mx[0][other] = distances[current][other] + pi[current] + pi[other]
+                self.depth[other] = self.depth[current] + 1
+                stack.append(other)
+        for level in range(1, self.log):
+            previous_up, previous_mx = self.up[level - 1], self.mx[level - 1]
+            up, mx = self.up[level], self.mx[level]
+            for city in range(n):
+                middle = previous_up[city]
+                up[city] = previous_up[middle]
+                mx[city] = max(previous_mx[city], previous_mx[middle])
+
+    def path_max(self, a: int, b: int) -> float:
+        result = 0.0
+        if self.depth[a] < self.depth[b]:
+            a, b = b, a
+        difference = self.depth[a] - self.depth[b]
+        level = 0
+        while difference:
+            if difference & 1:
+                result = max(result, self.mx[level][a])
+                a = self.up[level][a]
+            difference >>= 1
+            level += 1
+        if a == b:
+            return result
+        for level in range(self.log - 1, -1, -1):
+            if self.up[level][a] != self.up[level][b]:
+                result = max(result, self.mx[level][a], self.mx[level][b])
+                a = self.up[level][a]
+                b = self.up[level][b]
+        return max(result, self.mx[0][a], self.mx[0][b])
+
+
+def _prepare_sparse(distances, penalties, one_tree, candidates):
+    tree = minimum_one_tree(distances, penalties, candidates) if one_tree is None else one_tree
+    pi = tree.penalties if penalties is None else penalties
+    return tree, pi, _PathMaximum(tree, distances, pi)
+
+
+def _sparse_alpha(city: int, other: int, tree: OneTree, distances,
+                  pi: Sequence[float], helper: _PathMaximum) -> float:
+    if _edge(city, other) in tree.edges:
+        return 0.0
+    cost = distances[city][other] + pi[city] + pi[other]
+    if city == 0 or other == 0:
+        replaced = max(
+            distances[0][s] + pi[0] + pi[s] for _, s in tree.special_edges
+        )
+        return max(0.0, cost - replaced)
+    return max(0.0, cost - helper.path_max(city, other))
+
+
+def _sparse_alpha_values(city, distances, penalties, one_tree, candidates):
+    tree, pi, helper = _prepare_sparse(distances, penalties, one_tree, candidates)
+    values = [inf] * len(distances)
+    values[city] = 0.0
+    for other in candidates[city]:
+        if other == city or not 0 <= other < len(distances):
+            continue
+        values[other] = _sparse_alpha(city, other, tree, distances, pi, helper)
+    return values
+
+
+def _sparse_candidate_sets(distances, k, penalties, one_tree, candidates):
+    """Alpha-order candidates restricted to a near-neighbour graph (O(nK log K))."""
+    tree, pi, helper = _prepare_sparse(distances, penalties, one_tree, candidates)
+    result: list[list[int]] = []
+    for city in range(len(distances)):
+        scored = []
+        for other in candidates[city]:
+            if other == city or not 0 <= other < len(distances):
+                continue
+            alpha = _sparse_alpha(city, other, tree, distances, pi, helper)
+            scored.append((alpha, distances[city][other], other))
+        scored.sort()
+        result.append([item[2] for item in scored[:k]])
     return result
