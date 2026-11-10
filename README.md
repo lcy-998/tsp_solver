@@ -55,6 +55,25 @@ instance = load_instances("data/sample.txt", distance_matrix_threshold=1000)[0]
 
 绘图功能是可选的，需要安装 `requirements.txt` 中的 Matplotlib。核心解析、指标和算法对比不依赖第三方包。
 
+## 迭代局部搜索（ILS）
+
+`ILSSolver` 使用最近邻构造初始解，每轮执行双桥扰动和候选表 2-opt，并始终保留历史最优解：
+
+```python
+from tsp.solvers import ILSSolver
+
+solver = ILSSolver(
+    iterations=100,
+    candidate_count=15,
+    perturbation_strength=1,
+    acceptance="better",  # 接受更优或等长解；也可设为 "always"
+    seed=42,
+)
+solution = solver.solve(instance)
+```
+
+`metadata["history"]` 记录每轮结束后的历史最优长度，`accepted_iterations` 记录接受新 incumbent 的次数。最近邻构造、双桥扰动和闭环长度计算分别由 `tsp.construction`、`tsp.perturbations` 和 `tsp.local_search` 提供，可供其他算法复用。
+
 ## 性能相关实现（n 接近 1000 时必读）
 
 - `tsp/models.py` 在装有 numpy 时按行向量化构建距离矩阵：n ≤ 2000 返回 list of lists（标量索引更快），更大时返回 numpy 数组以节省内存。

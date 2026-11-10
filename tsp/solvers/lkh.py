@@ -4,8 +4,10 @@ from random import Random
 from typing import Iterable
 
 from ..candidates import nearest_neighbours
-from ..local_search import two_opt
+from ..construction import nearest_neighbor_route
+from ..local_search import tour_length, two_opt
 from ..models import TSPInstance, TSPSolution
+from ..perturbations import double_bridge
 from ..solver import TSPSolver
 
 
@@ -66,13 +68,13 @@ class LKHSolver(TSPSolver):
 
     @staticmethod
     def _construct(start: int, candidates, d, rng: Random, randomized: bool) -> list[int]:
-        route, left = [start], set(range(len(d))) - {start}
-        while left:
-            choices = [x for x in candidates[route[-1]] if x in left] or list(left)
-            choices.sort(key=lambda x: d[route[-1]][x])
-            nxt = rng.choice(choices[:min(4, len(choices))]) if randomized else choices[0]
-            route.append(nxt); left.remove(nxt)
-        return route
+        return nearest_neighbor_route(
+            d,
+            start=start,
+            rng=rng,
+            rcl_size=4 if randomized else 1,
+            candidates=candidates,
+        )
 
     def _lk_search(self, route: list[int], candidates, d) -> list[int]:
         n = len(route)
@@ -145,12 +147,8 @@ class LKHSolver(TSPSolver):
 
     @staticmethod
     def _double_bridge(route, rng):
-        if len(route) < 8:
-            return route
-        a, b, c = sorted(rng.sample(range(1, len(route)), 3))
-        return route[:a] + route[c:] + route[b:c] + route[a:b]
+        return double_bridge(route, rng)
 
     @staticmethod
     def _length(route: Iterable[int], d) -> float:
-        route = list(route)
-        return sum(d[route[i]][route[(i + 1) % len(route)]] for i in range(len(route)))
+        return tour_length(list(route), d)

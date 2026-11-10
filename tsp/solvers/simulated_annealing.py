@@ -2,6 +2,8 @@ from collections.abc import Sequence
 from math import exp
 from random import Random
 
+from ..construction import nearest_neighbor_route
+from ..local_search import tour_length
 from ..models import TSPInstance, TSPSolution
 from ..solver import TSPSolver
 
@@ -46,14 +48,7 @@ class SimulatedAnnealingSolver(TSPSolver):
         distances = instance.distance_matrix
 
         # Nearest-neighbor initialization gives annealing a useful starting tour.
-        unvisited = set(range(1, size))
-        route = [0]
-        while unvisited:
-            current = route[-1]
-            next_city = min(unvisited, key=lambda city: distances[current][city])
-            route.append(next_city)
-            unvisited.remove(next_city)
-
+        route = nearest_neighbor_route(distances)
         current_length = self._length(route, distances)
         best_route = route[:]
         best_length = current_length
@@ -100,7 +95,4 @@ class SimulatedAnnealingSolver(TSPSolver):
 
     @staticmethod
     def _length(route: list[int], distances: Sequence[Sequence[float]]) -> float:
-        return sum(
-            distances[route[index]][route[(index + 1) % len(route)]]
-            for index in range(len(route))
-        )
+        return tour_length(route, distances)

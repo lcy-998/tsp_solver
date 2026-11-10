@@ -2,6 +2,8 @@ from collections.abc import Sequence
 from math import inf
 from random import Random
 
+from ..construction import nearest_neighbor_route
+from ..local_search import tour_length
 from ..models import TSPInstance, TSPSolution
 from ..solver import TSPSolver
 
@@ -140,18 +142,8 @@ class AntColonySolver(TSPSolver):
     def _nearest_neighbor(
         distances: Sequence[Sequence[float]], size: int
     ) -> list[int]:
-        route = [0]
-        unvisited = set(range(1, size))
-        while unvisited:
-            current = route[-1]
-            next_city = min(unvisited, key=lambda city: distances[current][city])
-            route.append(next_city)
-            unvisited.remove(next_city)
-        return route
+        return nearest_neighbor_route(distances)
 
     @staticmethod
     def _length(route: list[int], distances: Sequence[Sequence[float]]) -> float:
-        return sum(
-            distances[start][end]
-            for start, end in zip(route, route[1:] + route[:1])
-        )
+        return tour_length(route, distances)

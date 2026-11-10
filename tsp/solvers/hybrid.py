@@ -4,8 +4,10 @@ from random import Random
 from typing import Sequence
 
 from ..candidates import nearest_neighbours
-from ..local_search import two_opt
+from ..construction import nearest_neighbor_route
+from ..local_search import tour_length, two_opt
 from ..models import TSPInstance, TSPSolution
+from ..perturbations import double_bridge
 from ..solver import TSPSolver
 
 
@@ -87,16 +89,12 @@ class HybridTSPSolver(TSPSolver):
 
     @staticmethod
     def _nearest_neighbor(n: int, d: Sequence[Sequence[float]], rng: Random, randomized: bool) -> list[int]:
-        start = rng.randrange(n) if randomized else 0
-        route = [start]
-        left = set(range(n)) - {start}
-        while left:
-            choices = sorted(left, key=lambda city: d[route[-1]][city])
-            # A small restricted candidate list makes repeated starts diverse.
-            next_city = rng.choice(choices[: min(3, len(choices))]) if randomized else choices[0]
-            route.append(next_city)
-            left.remove(next_city)
-        return route
+        return nearest_neighbor_route(
+            d,
+            start=rng.randrange(n) if randomized else 0,
+            rng=rng,
+            rcl_size=3 if randomized else 1,
+        )
 
     @staticmethod
     def _savings_route(n: int, d: Sequence[Sequence[float]], rng: Random) -> list[int]:
@@ -201,14 +199,11 @@ class HybridTSPSolver(TSPSolver):
 
     @staticmethod
     def _double_bridge(route: list[int], rng: Random) -> list[int]:
-        if len(route) < 8:
-            return route[:]
-        a, b, c = sorted(rng.sample(range(1, len(route)), 3))
-        return route[:a] + route[c:] + route[b:c] + route[a:b]
+        return double_bridge(route, rng)
 
     @staticmethod
     def _length(route: list[int], d: Sequence[Sequence[float]]) -> float:
-        return sum(d[route[i]][route[(i + 1) % len(route)]] for i in range(len(route)))
+        return tour_length(route, d)
 
 
 # Short alias for callers who prefer the generic name used in experiment code.
