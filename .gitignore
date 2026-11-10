@@ -7,3 +7,6 @@ __pycache__/
 data/*
 !data/sample.txt
 .workbuddy/*
+
+# Experiment artefacts. Write test/bench output under .workbuddy/logs/ instead.
+output/

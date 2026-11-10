@@ -167,8 +167,10 @@ def main():
     ax2.legend(fontsize=8, frameon=False)
 
     fig.tight_layout()
-    output = Path("output")
-    output.mkdir(exist_ok=True)
+    # Benchmark charts are throwaway artefacts: keep them with the logs under
+    # .workbuddy/ (git-ignored) instead of creating a top-level output folder.
+    output = Path(__file__).resolve().parents[1] / ".workbuddy" / "logs" / "bench"
+    output.mkdir(parents=True, exist_ok=True)
     fig.savefig(output / "before_after.png", dpi=160)
     print(f"\nchart written to {output / 'before_after.png'}")
 
